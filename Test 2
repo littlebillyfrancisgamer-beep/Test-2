@@ -1,0 +1,1151 @@
+-- // Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local LocalizationService = game:GetService("LocalizationService")
+local TeleportService = game:GetService("TeleportService")
+local CoreGui = game:GetService("CoreGui")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+-- Robust safe clipboard wrapper to prevent crashing or nil errors on various executors
+local function SafeCopyToClipboard(text)
+    local success, err = pcall(function()
+        if setclipboard then
+            setclipboard(text)
+        elseif toclipboard then
+            toclipboard(text)
+        elseif syn and syn.write_clipboard then
+            syn.write_clipboard(text)
+        elseif Clipboard and Clipboard.set then
+            Clipboard.set(text)
+        else
+            error("No clipboard function available")
+        end
+    end)
+    return success
+end
+
+-- // Session & Profile Statistics Tracker
+local sessionStartTime = os.time()
+local userCountry = "Unknown"
+
+pcall(function()
+    userCountry = LocalizationService:GetCountryRegionForPlayerAsync(LocalPlayer)
+end)
+
+local displayName = LocalPlayer.DisplayName
+local realName = LocalPlayer.Name
+
+local accountAgeDays = LocalPlayer.AccountAge
+local accountAgeYears = math.floor(accountAgeDays / 365)
+local accountAgeString = accountAgeYears .. "y " .. (accountAgeDays % 365) .. "d (" .. accountAgeDays .. " days)"
+
+-- // Color Definitions Dictionary (Expanded with Rainbow & requested colors)
+local ColorOptions = {
+    ["Red"] = Color3.fromRGB(255, 50, 50),
+    ["White"] = Color3.fromRGB(255, 255, 255),
+    ["Pink"] = Color3.fromRGB(255, 105, 180),
+    ["Black"] = Color3.fromRGB(15, 15, 15),
+    ["Green"] = Color3.fromRGB(50, 255, 50),
+    ["Purple"] = Color3.fromRGB(147, 112, 219),
+    ["Blue"] = Color3.fromRGB(50, 150, 255),
+    ["Brown"] = Color3.fromRGB(139, 69, 19),
+    ["Rainbow"] = "Rainbow",
+    ["Randomizer"] = "Random"
+}
+local ColorKeys = {"Red", "White", "Pink", "Black", "Green", "Purple", "Blue", "Brown", "Rainbow", "Randomizer"}
+
+local function getColorValue(selection)
+    if selection == "Rainbow" then
+        local tickTime = tick() * 5
+        return Color3.fromHSV(tickTime % 1, 1, 1)
+    elseif selection == "Randomizer" then
+        return Color3.fromRGB(math.random(0, 255), math.random(0, 255), math.random(0, 255))
+    end
+    return ColorOptions[selection] or Color3.fromRGB(255, 50, 50)
+end
+
+-- // Settings / Config
+_G.Settings = {
+    AimbotEnabled = false,
+    FOV = 120,
+    Smoothness = 5,
+    TeamCheck = true,
+    WallCheck = false,
+    ESPEnabled = false,
+    AimPart = "Head",
+    FOVColor = "Red",
+    ESPColor = "Red",
+    UIThemeColor = "Red",
+    FOVThickness = 1,
+    FOVFilled = false,
+    FOVFillTransparency = 0.85
+}
+
+-- Spectate state tracker
+local spectatingPlayer = nil
+local currentSpectateConnection = nil
+
+-- // Create GUI UI Library (Modern ChatGPT/Dark Theme)
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ModernDeltaOverlay"
+ScreenGui.Parent = CoreGui
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+-- // Notification UI System
+local NotificationContainer = Instance.new("Frame")
+NotificationContainer.Name = "NotificationContainer"
+NotificationContainer.Parent = ScreenGui
+NotificationContainer.BackgroundTransparency = 1
+NotificationContainer.Position = UDim2.new(1, -230, 0, 20)
+NotificationContainer.Size = UDim2.new(0, 210, 0, 300)
+NotificationContainer.ZIndex = 100
+
+local NotifLayout = Instance.new("UIListLayout")
+NotifLayout.Parent = NotificationContainer
+NotifLayout.SortOrder = Enum.SortOrder.LayoutOrder
+NotifLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+NotifLayout.Padding = UDim.new(0, 8)
+
+local function SendNotification(title, message, duration)
+    duration = duration or 3
+    
+    local NotifCard = Instance.new("Frame")
+    NotifCard.Parent = NotificationContainer
+    NotifCard.BackgroundColor3 = Color3.fromRGB(25, 25, 28)
+    NotifCard.Size = UDim2.new(1, 0, 0, 55)
+    NotifCard.BackgroundTransparency = 1
+    NotifCard.Position = UDim2.new(1, 50, 0, 0)
+    NotifCard.ZIndex = 101
+
+    local CardCorner = Instance.new("UICorner")
+    CardCorner.CornerRadius = UDim.new(0, 6)
+    CardCorner.Parent = NotifCard
+
+    local CardStroke = Instance.new("UIStroke")
+    CardStroke.Name = "DynamicStroke"
+    CardStroke.Color = getColorValue(_G.Settings.UIThemeColor)
+    CardStroke.Thickness = 1.2
+    CardStroke.Parent = NotifCard
+
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Parent = NotifCard
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Position = UDim2.new(0, 10, 0, 6)
+    TitleLabel.Size = UDim2.new(1, -20, 0, 18)
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextColor3 = Color3.fromRGB(255, 75, 75)
+    TitleLabel.TextSize = 12
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.Text = title
+    TitleLabel.ZIndex = 102
+
+    local MsgLabel = Instance.new("TextLabel")
+    MsgLabel.Parent = NotifCard
+    MsgLabel.BackgroundTransparency = 1
+    MsgLabel.Position = UDim2.new(0, 10, 0, 24)
+    MsgLabel.Size = UDim2.new(1, -20, 0, 24)
+    MsgLabel.Font = Enum.Font.Gotham
+    MsgLabel.TextColor3 = Color3.fromRGB(210, 210, 215)
+    MsgLabel.TextSize = 10
+    MsgLabel.TextXAlignment = Enum.TextXAlignment.Left
+    MsgLabel.TextYAlignment = Enum.TextYAlignment.Top
+    MsgLabel.TextWrapped = true
+    MsgLabel.Text = message
+    MsgLabel.ZIndex = 102
+
+    -- Tween In
+    TweenService:Create(NotifCard, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+        BackgroundTransparency = 0.1,
+        Position = UDim2.new(0, 0, 0, 0)
+    }):Play()
+
+    task.delay(duration, function()
+        if NotifCard and NotifCard.Parent then
+            local tweenOut = TweenService:Create(NotifCard, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+                BackgroundTransparency = 1,
+                Position = UDim2.new(1, 50, 0, 0)
+            })
+            tweenOut:Play()
+            tweenOut.Completed:Connect(function()
+                NotifCard:Destroy()
+            end)
+        end
+    end)
+end
+
+-- // Main Frame Construction
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = Color3.fromRGB(24, 26, 33) -- Modern Sleek Dark Slate
+MainFrame.Position = UDim2.new(0.5, -255, 0.5, -210)
+MainFrame.Size = UDim2.new(0, 250, 0, 420)
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.ClipsDescendants = true
+MainFrame.BackgroundTransparency = 1
+MainFrame.Visible = false
+MainFrame.ZIndex = 2
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 10)
+MainCorner.Parent = MainFrame
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Name = "DynamicStroke"
+MainStroke.Color = getColorValue(_G.Settings.UIThemeColor)
+MainStroke.Thickness = 1.5
+MainStroke.Parent = MainFrame
+
+-- Modern Sleek Logo-Inspired Title Bar
+local Title = Instance.new("TextLabel")
+Title.Parent = MainFrame
+Title.BackgroundColor3 = Color3.fromRGB(32, 35, 46) -- Logo Panel Color
+Title.Size = UDim2.new(1, 0, 0, 42)
+Title.Font = Enum.Font.GothamBold
+Title.Text = "  🔥 Op Aimbot Script X Hub"
+Title.TextColor3 = Color3.fromRGB(240, 245, 255)
+Title.TextSize = 12
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.ZIndex = 3
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 10)
+TitleCorner.Parent = Title
+
+-- Flat bottom corners for header bar
+local TitleCover = Instance.new("Frame")
+TitleCover.Size = UDim2.new(1, 0, 0, 10)
+TitleCover.Position = UDim2.new(0, 0, 1, -10)
+TitleCover.BackgroundColor3 = Color3.fromRGB(32, 35, 46)
+TitleCover.BorderSizePixel = 0
+TitleCover.Parent = Title
+
+-- Gold / Metallic Trim Line under the Header (matching the logo's gold canopy trim)
+local GoldTrim = Instance.new("Frame")
+GoldTrim.Size = UDim2.new(1, 0, 0, 2)
+GoldTrim.Position = UDim2.new(0, 0, 1, 0)
+GoldTrim.BackgroundColor3 = Color3.fromRGB(210, 185, 115)
+GoldTrim.BorderSizePixel = 0
+GoldTrim.Parent = Title
+
+-- Container for Content (Increased CanvasSize to accommodate new items)
+local ContentContainer = Instance.new("ScrollingFrame")
+ContentContainer.Parent = MainFrame
+ContentContainer.BackgroundTransparency = 1
+ContentContainer.Position = UDim2.new(0, 0, 0, 46)
+ContentContainer.Size = UDim2.new(1, 0, 1, -46)
+ContentContainer.CanvasSize = UDim2.new(0, 0, 0, 840)
+ContentContainer.ScrollBarThickness = 2
+ContentContainer.ZIndex = 3
+
+-- // SECONDARY GUI: Attached Player List Panel
+local PlayerListFrame = Instance.new("Frame")
+PlayerListFrame.Name = "PlayerListFrame"
+PlayerListFrame.Parent = ScreenGui
+PlayerListFrame.BackgroundColor3 = Color3.fromRGB(24, 26, 33)
+PlayerListFrame.Position = UDim2.new(0.5, -1, 0.5, -210) 
+PlayerListFrame.Size = UDim2.new(0, 240, 0, 420)
+PlayerListFrame.Active = true
+PlayerListFrame.Draggable = true
+PlayerListFrame.ClipsDescendants = true
+PlayerListFrame.BackgroundTransparency = 1
+PlayerListFrame.Visible = false
+PlayerListFrame.ZIndex = 2
+
+local ListCorner = Instance.new("UICorner")
+ListCorner.CornerRadius = UDim.new(0, 10)
+ListCorner.Parent = PlayerListFrame
+
+local ListStroke = Instance.new("UIStroke")
+ListStroke.Name = "DynamicStroke"
+ListStroke.Color = getColorValue(_G.Settings.UIThemeColor)
+ListStroke.Thickness = 1.5
+ListStroke.Parent = PlayerListFrame
+
+-- Player List Title Bar (Logo-Inspired Match)
+local ListTitle = Instance.new("TextLabel")
+ListTitle.Name = "ListTitle"
+ListTitle.Parent = PlayerListFrame
+ListTitle.BackgroundColor3 = Color3.fromRGB(32, 35, 46)
+ListTitle.Size = UDim2.new(1, 0, 0, 42)
+ListTitle.Font = Enum.Font.GothamBold
+ListTitle.Text = "  👥 Lobby Players [0/0]"
+ListTitle.TextColor3 = Color3.fromRGB(240, 245, 255)
+ListTitle.TextSize = 13
+ListTitle.TextXAlignment = Enum.TextXAlignment.Left
+ListTitle.ZIndex = 3
+
+local ListTitleCorner = Instance.new("UICorner")
+ListTitleCorner.CornerRadius = UDim.new(0, 10)
+ListTitleCorner.Parent = ListTitle
+
+local ListTitleCover = Instance.new("Frame")
+ListTitleCover.Size = UDim2.new(1, 0, 0, 10)
+ListTitleCover.Position = UDim2.new(0, 0, 1, -10)
+ListTitleCover.BackgroundColor3 = Color3.fromRGB(32, 35, 46)
+ListTitleCover.BorderSizePixel = 0
+ListTitleCover.Parent = ListTitle
+
+local ListGoldTrim = Instance.new("Frame")
+ListGoldTrim.Size = UDim2.new(1, 0, 0, 2)
+ListGoldTrim.Position = UDim2.new(0, 0, 1, 0)
+ListGoldTrim.BackgroundColor3 = Color3.fromRGB(210, 185, 115)
+ListGoldTrim.BorderSizePixel = 0
+ListGoldTrim.Parent = ListTitle
+
+-- Scrolling Container for player cards
+local PlayerScrollContainer = Instance.new("ScrollingFrame")
+PlayerScrollContainer.Parent = PlayerListFrame
+PlayerScrollContainer.BackgroundTransparency = 1
+PlayerScrollContainer.Position = UDim2.new(0, 0, 0, 46)
+PlayerScrollContainer.Size = UDim2.new(1, 0, 1, -46)
+PlayerScrollContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
+PlayerScrollContainer.ScrollBarThickness = 2
+PlayerScrollContainer.ZIndex = 3
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.Parent = PlayerScrollContainer
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 5)
+
+-- // INTERACTIVE PLAYER ACTION MODAL POPUP
+local ActionModal = Instance.new("Frame")
+ActionModal.Name = "ActionModal"
+ActionModal.Parent = ScreenGui
+ActionModal.BackgroundColor3 = Color3.fromRGB(25, 25, 28)
+ActionModal.Size = UDim2.new(0, 180, 0, 185)
+ActionModal.Visible = false
+ActionModal.Active = true
+ActionModal.ZIndex = 200
+
+local ModalCorner = Instance.new("UICorner")
+ModalCorner.CornerRadius = UDim.new(0, 8)
+ModalCorner.Parent = ActionModal
+
+local ModalStroke = Instance.new("UIStroke")
+ModalStroke.Name = "DynamicStroke"
+ModalStroke.Color = getColorValue(_G.Settings.UIThemeColor)
+ModalStroke.Thickness = 1.5
+ModalStroke.Parent = ActionModal
+
+local ModalTitle = Instance.new("TextLabel")
+ModalTitle.Parent = ActionModal
+ModalTitle.BackgroundTransparency = 1
+ModalTitle.Position = UDim2.new(0, 0, 0, 6)
+ModalTitle.Size = UDim2.new(1, 0, 0, 22)
+ModalTitle.Font = Enum.Font.GothamBold
+ModalTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+ModalTitle.TextSize = 12
+ModalTitle.Text = "Actions"
+ModalTitle.ZIndex = 201
+
+local TeleportBtn = Instance.new("TextButton")
+TeleportBtn.Parent = ActionModal
+TeleportBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+TeleportBtn.Position = UDim2.new(0.07, 0, 0, 32)
+TeleportBtn.Size = UDim2.new(0.86, 0, 0, 30)
+TeleportBtn.Font = Enum.Font.Gotham
+TeleportBtn.Text = "🌀 Teleport"
+TeleportBtn.TextColor3 = Color3.fromRGB(200, 200, 205)
+TeleportBtn.TextSize = 11
+TeleportBtn.AutoButtonColor = true
+TeleportBtn.ZIndex = 202
+
+local TCorner = Instance.new("UICorner")
+TCorner.CornerRadius = UDim.new(0, 6)
+TCorner.Parent = TeleportBtn
+
+local SpectateBtn = Instance.new("TextButton")
+SpectateBtn.Parent = ActionModal
+SpectateBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+SpectateBtn.Position = UDim2.new(0.07, 0, 0, 67)
+SpectateBtn.Size = UDim2.new(0.86, 0, 0, 30)
+SpectateBtn.Font = Enum.Font.Gotham
+SpectateBtn.Text = "👁️ Spectate"
+SpectateBtn.TextColor3 = Color3.fromRGB(200, 200, 205)
+SpectateBtn.TextSize = 11
+SpectateBtn.AutoButtonColor = true
+SpectateBtn.ZIndex = 202
+
+local SCorner = Instance.new("UICorner")
+SCorner.CornerRadius = UDim.new(0, 6)
+SCorner.Parent = SpectateBtn
+
+local CopyDisplayNameBtn = Instance.new("TextButton")
+CopyDisplayNameBtn.Parent = ActionModal
+CopyDisplayNameBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+CopyDisplayNameBtn.Position = UDim2.new(0.07, 0, 0, 102)
+CopyDisplayNameBtn.Size = UDim2.new(0.86, 0, 0, 30)
+CopyDisplayNameBtn.Font = Enum.Font.Gotham
+CopyDisplayNameBtn.Text = "📋 Copy Display Name"
+CopyDisplayNameBtn.TextColor3 = Color3.fromRGB(200, 200, 205)
+CopyDisplayNameBtn.TextSize = 10
+CopyDisplayNameBtn.AutoButtonColor = true
+CopyDisplayNameBtn.ZIndex = 202
+
+local CDNCorner = Instance.new("UICorner")
+CDNCorner.CornerRadius = UDim.new(0, 6)
+CDNCorner.Parent = CopyDisplayNameBtn
+
+local CopyUsernameBtn = Instance.new("TextButton")
+CopyUsernameBtn.Parent = ActionModal
+CopyUsernameBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+CopyUsernameBtn.Position = UDim2.new(0.07, 0, 0, 137)
+CopyUsernameBtn.Size = UDim2.new(0.86, 0, 0, 30)
+CopyUsernameBtn.Font = Enum.Font.Gotham
+CopyUsernameBtn.Text = "📋 Copy Real Username"
+CopyUsernameBtn.TextColor3 = Color3.fromRGB(200, 200, 205)
+CopyUsernameBtn.TextSize = 10
+CopyUsernameBtn.AutoButtonColor = true
+CopyUsernameBtn.ZIndex = 202
+
+local CUNCorner = Instance.new("UICorner")
+CUNCorner.CornerRadius = UDim.new(0, 6)
+CUNCorner.Parent = CopyUsernameBtn
+
+local selectedTargetPlayer = nil
+
+-- Dedicated Stop Spectating Button Overlay
+local StopSpectateOverlayBtn = Instance.new("TextButton")
+StopSpectateOverlayBtn.Name = "StopSpectateOverlayBtn"
+StopSpectateOverlayBtn.Parent = ScreenGui
+StopSpectateOverlayBtn.Size = UDim2.new(0, 150, 0, 36)
+StopSpectateOverlayBtn.Position = UDim2.new(0.5, -75, 0, 15)
+StopSpectateOverlayBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+StopSpectateOverlayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+StopSpectateOverlayBtn.TextSize = 12
+StopSpectateOverlayBtn.Font = Enum.Font.GothamBold
+StopSpectateOverlayBtn.Text = "Stop Spectating"
+StopSpectateOverlayBtn.Visible = false
+StopSpectateOverlayBtn.ZIndex = 150
+
+local StopCorner = Instance.new("UICorner")
+StopCorner.CornerRadius = UDim.new(0, 6)
+StopCorner.Parent = StopSpectateOverlayBtn
+
+-- Spectate Functions
+local function stopSpectating()
+    spectatingPlayer = nil
+    if currentSpectateConnection then
+        currentSpectateConnection:Disconnect()
+        currentSpectateConnection = nil
+    end
+    
+    Camera.CameraType = Enum.CameraType.Custom
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+        Camera.CameraSubject = LocalPlayer.Character.Humanoid
+    end
+    
+    StopSpectateOverlayBtn.Visible = false
+    SendNotification("Spectator Mode", "Stopped spectating.", 3)
+end
+
+local function startSpectating(target)
+    if not target or target == LocalPlayer then 
+        SendNotification("Spectator", "Cannot spectate yourself.", 2)
+        return 
+    end
+    
+    spectatingPlayer = target
+    StopSpectateOverlayBtn.Visible = true
+    SendNotification("Spectator Mode", "Now spectating " .. target.DisplayName, 3)
+
+    if currentSpectateConnection then currentSpectateConnection:Disconnect() end
+    currentSpectateConnection = RunService.RenderStepped:Connect(function()
+        if spectatingPlayer and spectatingPlayer.Character then
+            local humanoid = spectatingPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                Camera.CameraSubject = humanoid
+            end
+        else
+            stopSpectating()
+        end
+    end)
+end
+
+StopSpectateOverlayBtn.MouseButton1Click:Connect(stopSpectating)
+
+UserInputService.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if ActionModal.Visible then
+            local mousePos = UserInputService:GetMouseLocation()
+            local absPos = ActionModal.AbsolutePosition
+            local absSize = ActionModal.AbsoluteSize
+            if mousePos.X < absPos.X or mousePos.X > absPos.X + absSize.X or mousePos.Y < absPos.Y or mousePos.Y > absPos.Y + absSize.Y then
+                ActionModal.Visible = false
+            end
+        end
+    end
+end)
+
+TeleportBtn.MouseButton1Click:Connect(function()
+    if selectedTargetPlayer and selectedTargetPlayer.Character then
+        local targetHRP = selectedTargetPlayer.Character:FindFirstChild("HumanoidRootPart")
+        local localHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if targetHRP and localHRP then
+            localHRP.CFrame = targetHRP.CFrame + Vector3.new(0, 3, 0)
+            SendNotification("Teleport", "Successfully teleported to " .. selectedTargetPlayer.DisplayName, 3)
+        else
+            SendNotification("Teleport Failed", "Target character lacks required parts.", 3)
+        end
+    else
+        SendNotification("Teleport Failed", "Player is not spawned.", 3)
+    end
+    ActionModal.Visible = false
+end)
+
+SpectateBtn.MouseButton1Click:Connect(function()
+    if selectedTargetPlayer then
+        if spectatingPlayer == selectedTargetPlayer then
+            stopSpectating()
+        else
+            startSpectating(selectedTargetPlayer)
+        end
+    end
+    ActionModal.Visible = false
+end)
+
+CopyDisplayNameBtn.MouseButton1Click:Connect(function()
+    if selectedTargetPlayer then
+        local success = SafeCopyToClipboard(selectedTargetPlayer.DisplayName)
+        if success then
+            SendNotification("Clipboard", "Copied Display Name: " .. selectedTargetPlayer.DisplayName, 3)
+        else
+            SendNotification("Clipboard Failed", "Could not write to clipboard.", 3)
+        end
+    end
+    ActionModal.Visible = false
+end)
+
+CopyUsernameBtn.MouseButton1Click:Connect(function()
+    if selectedTargetPlayer then
+        local success = SafeCopyToClipboard(selectedTargetPlayer.Name)
+        if success then
+            SendNotification("Clipboard", "Copied Real Username: @" .. selectedTargetPlayer.Name, 3)
+        else
+            SendNotification("Clipboard Failed", "Could not write to clipboard.", 3)
+        end
+    end
+    ActionModal.Visible = false
+end)
+
+-- // Floating Open/Close Button (Logo Styled)
+local ToggleMenuBtn = Instance.new("TextButton")
+ToggleMenuBtn.Parent = ScreenGui
+ToggleMenuBtn.BackgroundColor3 = Color3.fromRGB(32, 35, 46)
+ToggleMenuBtn.Position = UDim2.new(0.02, 0, 0.4, 0)
+ToggleMenuBtn.Size = UDim2.new(0, 42, 0, 42)
+ToggleMenuBtn.Font = Enum.Font.GothamBold
+ToggleMenuBtn.Text = "X"
+ToggleMenuBtn.TextColor3 = Color3.fromRGB(240, 245, 255)
+ToggleMenuBtn.TextSize = 14
+ToggleMenuBtn.Active = true
+ToggleMenuBtn.Draggable = true
+ToggleMenuBtn.ZIndex = 50
+
+local BtnCorner = Instance.new("UICorner")
+BtnCorner.CornerRadius = UDim.new(0, 8)
+BtnCorner.Parent = ToggleMenuBtn
+
+local BtnStroke = Instance.new("UIStroke")
+BtnStroke.Name = "DynamicStroke"
+BtnStroke.Color = getColorValue(_G.Settings.UIThemeColor)
+BtnStroke.Thickness = 1.5
+BtnStroke.Parent = ToggleMenuBtn
+
+local menuVisible = false
+local function toggleMenu()
+    menuVisible = not menuVisible
+    if menuVisible then
+        MainFrame.Visible = true
+        PlayerListFrame.Visible = true
+        MainFrame.Size = UDim2.new(0, 0, 0, 0)
+        PlayerListFrame.Size = UDim2.new(0, 0, 0, 0)
+        MainFrame.BackgroundTransparency = 1
+        PlayerListFrame.BackgroundTransparency = 1
+        
+        TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            Size = UDim2.new(0, 250, 0, 420),
+            BackgroundTransparency = 0
+        }):Play()
+        TweenService:Create(PlayerListFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            Size = UDim2.new(0, 240, 0, 420),
+            BackgroundTransparency = 0
+        }):Play()
+    else
+        ActionModal.Visible = false
+        local tween1 = TweenService:Create(MainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, 0, 0, 0),
+            BackgroundTransparency = 1
+        })
+        local tween2 = TweenService:Create(PlayerListFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, 0, 0, 0),
+            BackgroundTransparency = 1
+        })
+        tween1:Play()
+        tween2:Play()
+        tween2.Completed:Connect(function()
+            if not menuVisible then 
+                MainFrame.Visible = false 
+                PlayerListFrame.Visible = false
+            end
+        end)
+    end
+end
+ToggleMenuBtn.MouseButton1Click:Connect(toggleMenu)
+
+local function createToggle(name, yPos, callback)
+    local btn = Instance.new("TextButton")
+    btn.Parent = ContentContainer
+    btn.BackgroundColor3 = Color3.fromRGB(30, 33, 44)
+    btn.Position = UDim2.new(0.05, 0, 0, yPos)
+    btn.Size = UDim2.new(0.9, 0, 0, 34)
+    btn.Font = Enum.Font.Gotham
+    btn.TextColor3 = Color3.fromRGB(200, 200, 205)
+    btn.TextSize = 12
+    btn.Text = "  " .. name
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.ZIndex = 4
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+    
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Parent = btn
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Position = UDim2.new(0.55, 0, 0, 0)
+    statusLabel.Size = UDim2.new(0.42, 0, 1, 0)
+    statusLabel.Font = Enum.Font.GothamBold
+    statusLabel.Text = "OFF"
+    statusLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    statusLabel.TextSize = 11
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Right
+    statusLabel.ZIndex = 5
+    
+    local state = false
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        if state then
+            statusLabel.Text = "ON"
+            statusLabel.TextColor3 = Color3.fromRGB(80, 140, 220) -- Glossy blue indicator match
+            TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(18, 70, 130)}):Play()
+            SendNotification("Feature Enabled", name .. " has been activated.", 2)
+        else
+            statusLabel.Text = "OFF"
+            statusLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+            TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(30, 33, 44)}):Play()
+            SendNotification("Feature Disabled", name .. " has been turned off.", 2)
+        end
+        callback(state)
+    end)
+end
+
+local function createSlider(name, yPos, min, max, step, current, callback)
+    local label = Instance.new("TextLabel")
+    label.Parent = ContentContainer
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0.05, 0, 0, yPos)
+    label.Size = UDim2.new(0.9, 0, 0, 18)
+    label.Font = Enum.Font.Gotham
+    label.TextColor3 = Color3.fromRGB(180, 180, 185)
+    label.TextSize = 11
+    label.Text = name .. ": " .. current
+    label.ZIndex = 4
+    
+    local btn = Instance.new("TextButton")
+    btn.Parent = ContentContainer
+    btn.BackgroundColor3 = Color3.fromRGB(30, 33, 44)
+    btn.Position = UDim2.new(0.05, 0, 0, yPos + 18)
+    btn.Size = UDim2.new(0.9, 0, 0, 26)
+    btn.Font = Enum.Font.Gotham
+    btn.TextColor3 = Color3.fromRGB(220, 220, 225)
+    btn.TextSize = 11
+    btn.Text = "Tap to cycle value"
+    btn.ZIndex = 4
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+    
+    local val = current
+    btn.MouseButton1Click:Connect(function()
+        val = val + step
+        if val > max then val = min end
+        label.Text = name .. ": " .. val
+        callback(val)
+    end)
+end
+
+local function createListCycle(name, yPos, options, callback)
+    local label = Instance.new("TextLabel")
+    label.Parent = ContentContainer
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0.05, 0, 0, yPos)
+    label.Size = UDim2.new(0.9, 0, 0, 18)
+    label.Font = Enum.Font.Gotham
+    label.TextColor3 = Color3.fromRGB(180, 180, 185)
+    label.TextSize = 11
+    label.Text = name .. ": " .. options[1]
+    label.ZIndex = 4
+    
+    local btn = Instance.new("TextButton")
+    btn.Parent = ContentContainer
+    btn.BackgroundColor3 = Color3.fromRGB(30, 33, 44)
+    btn.Position = UDim2.new(0.05, 0, 0, yPos + 18)
+    btn.Size = UDim2.new(0.9, 0, 0, 26)
+    btn.Font = Enum.Font.Gotham
+    btn.TextColor3 = Color3.fromRGB(220, 220, 225)
+    btn.TextSize = 11
+    btn.Text = "Tap to change configuration"
+    btn.ZIndex = 4
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+    
+    local currentIndex = 1
+    btn.MouseButton1Click:Connect(function()
+        currentIndex = currentIndex + 1
+        if currentIndex > #options then currentIndex = 1 end
+        local selectedOption = options[currentIndex]
+        label.Text = name .. ": " .. selectedOption
+        callback(selectedOption)
+    end)
+end
+
+-- // Build Interface Elements Layout
+createToggle("Aimbot Status", 8, function(state)
+    _G.Settings.AimbotEnabled = state
+end)
+
+createSlider("FOV Radius", 50, 50, 300, 25, _G.Settings.FOV, function(val)
+    _G.Settings.FOV = val
+end)
+
+createListCycle("FOV Color", 112, ColorKeys, function(selected)
+    _G.Settings.FOVColor = selected
+end)
+
+local thicknessOptions = {"1x", "2x", "3x", "4x", "5x", "6x", "7x", "8x", "9x", "10x"}
+createListCycle("FOV Thickness", 174, thicknessOptions, function(selected)
+    local num = tonumber(selected:match("%d+"))
+    _G.Settings.FOVThickness = num or 1
+end)
+
+createToggle("FOV Filler (Fill Inside)", 236, function(state)
+    _G.Settings.FOVFilled = state
+end)
+
+createSlider("Smoothness", 298, 1, 20, 1, _G.Settings.Smoothness, function(val)
+    _G.Settings.Smoothness = val
+end)
+
+createListCycle("Aim Part", 360, {"Head", "HumanoidRootPart", "Random"}, function(selected)
+    _G.Settings.AimPart = selected
+end)
+
+createToggle("Team Check", 422, function(state)
+    _G.Settings.TeamCheck = state
+end)
+
+createToggle("Wall Check", 464, function(state)
+    _G.Settings.WallCheck = state
+end)
+
+createToggle("ESP Boxes", 506, function(state)
+    _G.Settings.ESPEnabled = state
+end)
+
+createListCycle("ESP Color", 568, ColorKeys, function(selected)
+    _G.Settings.ESPColor = selected
+end)
+
+createListCycle("UI Theme Color", 630, ColorKeys, function(selected)
+    _G.Settings.UIThemeColor = selected
+    local newColor = getColorValue(selected)
+    for _, guiObj in ipairs(ScreenGui:GetDescendants()) do
+        if guiObj:IsA("UIStroke") and guiObj.Name == "DynamicStroke" then
+            guiObj.Color = newColor
+        end
+    end
+end)
+
+-- // Analytics & Info Section
+local StatsFrame = Instance.new("Frame")
+StatsFrame.Parent = ContentContainer
+StatsFrame.BackgroundColor3 = Color3.fromRGB(30, 33, 44)
+StatsFrame.Position = UDim2.new(0.05, 0, 0, 694)
+StatsFrame.Size = UDim2.new(0.9, 0, 0, 95)
+StatsFrame.ZIndex = 4
+
+local StatsCorner = Instance.new("UICorner")
+StatsCorner.CornerRadius = UDim.new(0, 6)
+StatsCorner.Parent = StatsFrame
+
+local StatsText = Instance.new("TextLabel")
+StatsText.Parent = StatsFrame
+StatsText.BackgroundTransparency = 1
+StatsText.Position = UDim2.new(0.05, 0, 0, 4)
+StatsText.Size = UDim2.new(0.9, 0, 0.9, 0)
+StatsText.Font = Enum.Font.Code
+StatsText.TextColor3 = Color3.fromRGB(220, 225, 240)
+StatsText.TextSize = 10
+StatsText.TextXAlignment = Enum.TextXAlignment.Left
+StatsText.TextYAlignment = Enum.TextYAlignment.Top
+StatsText.ZIndex = 5
+StatsText.Text = string.format("User: %s (@%s)\nCountry: %s\nRoblox Age: %s\nSession Time: 00:00:00", 
+    displayName, realName, userCountry, accountAgeString)
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        local elapsed = os.time() - sessionStartTime
+        local hours = math.floor(elapsed / 3600)
+        local minutes = math.floor((elapsed % 3600) / 60)
+        local seconds = elapsed % 60
+        
+        StatsText.Text = string.format("User: %s (@%s)\nCountry: %s\nRoblox Age: %s\nSession Time: %02d:%02d:%02d", 
+            displayName, realName, userCountry, accountAgeString, hours, minutes, seconds)
+    end
+end)
+
+-- // Server Controls (Leave / Rejoin Buttons)
+local LeaveBtn = Instance.new("TextButton")
+LeaveBtn.Parent = ContentContainer
+LeaveBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+LeaveBtn.Position = UDim2.new(0.05, 0, 0, 799)
+LeaveBtn.Size = UDim2.new(0.435, 0, 0, 30)
+LeaveBtn.Font = Enum.Font.GothamBold
+LeaveBtn.Text = "🚪 Leave Server"
+LeaveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+LeaveBtn.TextSize = 11
+LeaveBtn.AutoButtonColor = true
+LeaveBtn.ZIndex = 4
+
+local LeaveCorner = Instance.new("UICorner")
+LeaveCorner.CornerRadius = UDim.new(0, 6)
+LeaveCorner.Parent = LeaveBtn
+
+local RejoinBtn = Instance.new("TextButton")
+RejoinBtn.Parent = ContentContainer
+RejoinBtn.BackgroundColor3 = Color3.fromRGB(50, 120, 60)
+RejoinBtn.Position = UDim2.new(0.515, 0, 0, 799)
+RejoinBtn.Size = UDim2.new(0.435, 0, 0, 30)
+RejoinBtn.Font = Enum.Font.GothamBold
+RejoinBtn.Text = "🔄 Rejoin Server"
+RejoinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+RejoinBtn.TextSize = 11
+RejoinBtn.AutoButtonColor = true
+RejoinBtn.ZIndex = 4
+
+local RejoinCorner = Instance.new("UICorner")
+RejoinCorner.CornerRadius = UDim.new(0, 6)
+RejoinCorner.Parent = RejoinBtn
+
+LeaveBtn.MouseButton1Click:Connect(function()
+    SendNotification("Server", "Leaving game...", 2)
+    task.wait(0.5)
+    LocalPlayer:Kick("Manually left via Op Aimbot Script X Hub.")
+end)
+
+RejoinBtn.MouseButton1Click:Connect(function()
+    SendNotification("Server", "Rejoining current server...", 2)
+    task.wait(0.5)
+    pcall(function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+    end)
+end)
+
+
+-- // Live Lobby Player List System
+local playerUIElements = {}
+
+local function createPlayerCard(player)
+    if playerUIElements[player] then return end
+
+    local cardButton = Instance.new("TextButton")
+    cardButton.Name = player.Name
+    cardButton.Parent = PlayerScrollContainer
+    cardButton.BackgroundColor3 = Color3.fromRGB(30, 33, 44)
+    cardButton.Size = UDim2.new(1, -8, 0, 44)
+    cardButton.AutoButtonColor = true
+    cardButton.Text = ""
+    cardButton.ZIndex = 4
+
+    local cardCorner = Instance.new("UICorner")
+    cardCorner.CornerRadius = UDim.new(0, 6)
+    cardCorner.Parent = cardButton
+
+    local infoLabel = Instance.new("TextLabel")
+    infoLabel.Name = "InfoLabel"
+    infoLabel.Parent = cardButton
+    infoLabel.BackgroundTransparency = 1
+    infoLabel.Position = UDim2.new(0.05, 0, 0, 3)
+    infoLabel.Size = UDim2.new(0.9, 0, 0, 22)
+    infoLabel.Font = Enum.Font.Gotham
+    infoLabel.TextColor3 = (player == LocalPlayer) and Color3.fromRGB(80, 140, 220) or Color3.fromRGB(230, 230, 235)
+    infoLabel.TextSize = 10
+    infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+    infoLabel.ZIndex = 5
+    infoLabel.Text = player.DisplayName .. " (@" .. player.Name .. ")" .. (player == LocalPlayer and " [You]" or "")
+
+    local hpBarBg = Instance.new("Frame")
+    hpBarBg.Name = "HPBarBg"
+    hpBarBg.Parent = cardButton
+    hpBarBg.BackgroundColor3 = Color3.fromRGB(45, 50, 65)
+    hpBarBg.Position = UDim2.new(0.05, 0, 0, 28)
+    hpBarBg.Size = UDim2.new(0.9, 0, 0, 8)
+    hpBarBg.ZIndex = 5
+
+    local hpBgCorner = Instance.new("UICorner")
+    hpBgCorner.CornerRadius = UDim.new(0, 3)
+    hpBgCorner.Parent = hpBarBg
+
+    local hpBarFill = Instance.new("Frame")
+    hpBarFill.Name = "HPBarFill"
+    hpBarFill.Parent = hpBarBg
+    hpBarFill.BackgroundColor3 = Color3.fromRGB(80, 140, 220)
+    hpBarFill.Size = UDim2.new(1, 0, 1, 0)
+    hpBarFill.ZIndex = 6
+
+    local hpFillCorner = Instance.new("UICorner")
+    hpFillCorner.CornerRadius = UDim.new(0, 3)
+    hpFillCorner.Parent = hpBarFill
+
+    cardButton.MouseButton1Click:Connect(function()
+        selectedTargetPlayer = player
+        ModalTitle.Text = player.DisplayName
+        
+        local mousePos = UserInputService:GetMouseLocation()
+        ActionModal.Position = UDim2.new(0, math.clamp(mousePos.X, 20, Camera.ViewportSize.X - 200), 0, math.clamp(mousePos.Y, 20, Camera.ViewportSize.Y - 200))
+        ActionModal.Visible = true
+    end)
+
+    playerUIElements[player] = {Card = cardButton, Info = infoLabel, Fill = hpBarFill}
+end
+
+local function removePlayerCard(player)
+    if playerUIElements[player] then
+        playerUIElements[player].Card:Destroy()
+        playerUIElements[player] = nil
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+    createPlayerCard(p)
+end
+
+Players.PlayerAdded:Connect(function(p)
+    createPlayerCard(p)
+end)
+
+Players.PlayerRemoving:Connect(function(p)
+    removePlayerCard(p)
+    if spectatingPlayer == p then
+        stopSpectating()
+    end
+end)
+
+-- Continuous loop for tracking stats & real-time player count
+RunService.RenderStepped:Connect(function()
+    local activeCount = 0
+    for player, elements in pairs(playerUIElements) do
+        activeCount = activeCount + 1
+        local character = player.Character
+        local localChar = LocalPlayer.Character
+        
+        if character and character:FindFirstChild("Humanoid") then
+            local humanoid = character.Humanoid
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            
+            local distStr = "Distance: N/A"
+            if localChar and localChar:FindFirstChild("HumanoidRootPart") and hrp then
+                local distance = math.floor((localChar.HumanoidRootPart.Position - hrp.Position).Magnitude)
+                distStr = distance .. " studs"
+            end
+
+            local tag = (player == LocalPlayer) and " [You]" or ""
+            elements.Info.Text = string.format("%s%s | %s", player.DisplayName, tag, distStr)
+
+            local health = math.clamp(humanoid.Health, 0, humanoid.MaxHealth)
+            local maxHealth = humanoid.MaxHealth > 0 and humanoid.MaxHealth or 100
+            local healthPercent = health / maxHealth
+            
+            elements.Fill.Size = UDim2.new(healthPercent, 0, 1, 0)
+            
+            if healthPercent > 0.5 then
+                elements.Fill.BackgroundColor3 = Color3.fromRGB(80, 140, 220)
+            elseif healthPercent > 0.25 then
+                elements.Fill.BackgroundColor3 = Color3.fromRGB(220, 160, 60)
+            else
+                elements.Fill.BackgroundColor3 = Color3.fromRGB(200, 50, 60)
+            end
+        else
+            local tag = (player == LocalPlayer) and " [You]" or ""
+            elements.Info.Text = string.format("%s%s | Dead/Respawning", player.DisplayName, tag)
+            elements.Fill.Size = UDim2.new(0, 0, 1, 0)
+        end
+    end
+    
+    ListTitle.Text = string.format("  👥 Lobby Players [%d/%d]", #Players:GetPlayers(), Players.MaxPlayers)
+    PlayerScrollContainer.CanvasSize = UDim2.new(0, 0, 0, activeCount * 50)
+end)
+
+-- // FOV & Aimbot & ESP Drawing
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Visible = false
+FOVCircle.Transparency = 0.7
+FOVCircle.Thickness = 1
+FOVCircle.Filled = false
+
+local espBoxes = {}
+
+local function removeESP(player)
+    if espBoxes[player] then
+        espBoxes[player]:Remove()
+        espBoxes[player] = nil
+    end
+end
+
+local function isVisible(targetPart)
+    if not _G.Settings.WallCheck then return true end
+    local origin = Camera.CFrame.Position
+    local direction = (targetPart.Position - origin)
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    local ignoreList = {LocalPlayer.Character}
+    if targetPart.Parent then table.insert(ignoreList, targetPart.Parent) end
+    raycastParams.FilterDescendantsInstances = ignoreList
+    raycastParams.IgnoreWater = true
+    
+    local result = workspace:Raycast(origin, direction, raycastParams)
+    return result == nil
+end
+
+local function getClosestTarget()
+    local targetPart = nil
+    local shortestDist = _G.Settings.FOV
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local isTeamMate = false
+            if _G.Settings.TeamCheck and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+                isTeamMate = true
+            end
+
+            if not isTeamMate then
+                local character = player.Character
+                if character and character:FindFirstChild("Humanoid") and character.Humanoid.Health > 0 then
+                    local chosenPart = nil
+                    if _G.Settings.AimPart == "Head" then
+                        chosenPart = character:FindFirstChild("Head")
+                    elseif _G.Settings.AimPart == "HumanoidRootPart" then
+                        chosenPart = character:FindFirstChild("HumanoidRootPart")
+                    elseif _G.Settings.AimPart == "Random" then
+                        local parts = {character:FindFirstChild("Head"), character:FindFirstChild("HumanoidRootPart")}
+                        chosenPart = parts[math.random(1, #parts)]
+                    end
+
+                    if chosenPart and isVisible(chosenPart) then
+                        local screenPos, onScreen = Camera:WorldToViewportPoint(chosenPart.Position)
+                        if onScreen then
+                            local dist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+                            if dist < shortestDist then
+                                shortestDist = dist
+                                targetPart = chosenPart
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return targetPart
+end
+
+RunService.RenderStepped:Connect(function()
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    if _G.Settings.AimbotEnabled then
+        FOVCircle.Visible = true
+        FOVCircle.Radius = _G.Settings.FOV
+        FOVCircle.Position = screenCenter
+        FOVCircle.Color = getColorValue(_G.Settings.FOVColor)
+        FOVCircle.Thickness = _G.Settings.FOVThickness
+        FOVCircle.Filled = _G.Settings.FOVFilled
+        FOVCircle.Transparency = _G.Settings.FOVFilled and 0.25 or 0.7
+        
+        local target = getClosestTarget()
+        if target then
+            Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, target.Position), 1 / _G.Settings.Smoothness)
+        end
+    else
+        FOVCircle.Visible = false
+    end
+
+    -- Dynamic UI Theme color update loop for Rainbow effect support
+    if _G.Settings.UIThemeColor == "Rainbow" then
+        local currentRainbowColor = getColorValue("Rainbow")
+        for _, guiObj in ipairs(ScreenGui:GetDescendants()) do
+            if guiObj:IsA("UIStroke") and guiObj.Name == "DynamicStroke" then
+                guiObj.Color = currentRainbowColor
+            end
+        end
+    end
+
+    local currentESPColor = getColorValue(_G.Settings.ESPColor)
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local character = player.Character
+            local box = espBoxes[player]
+            
+            if not box and _G.Settings.ESPEnabled then
+                box = Drawing.new("Square")
+                box.Visible = false
+                box.Thickness = 1
+                box.Filled = false
+                espBoxes[player] = box
+            end
+
+            if box then
+                box.Color = currentESPColor
+                if _G.Settings.ESPEnabled and character and character:FindFirstChild("HumanoidRootPart") and character:FindFirstChild("Humanoid") and character.Humanoid.Health > 0 then
+                    local skip = false
+                    if _G.Settings.TeamCheck and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+                        skip = true
+                    end
+
+                    if not skip then
+                        local rootPart = character.HumanoidRootPart
+                        local pos, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
+                        if onScreen then
+                            local size = math.clamp(2500 / pos.Z, 15, 300)
+                            box.Size = Vector2.new(size * 0.6, size)
+                            box.Position = Vector2.new(pos.X - box.Size.X / 2, pos.Y - box.Size.Y / 2)
+                            box.Visible = true
+                        else
+                            box.Visible = false
+                        end
+                    else
+                        box.Visible = false
+                    end
+                else
+                    box.Visible = false
+                end
+            end
+        end
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    removeESP(player)
+end)
+
+SendNotification("Loaded", "Op Aimbot Script X Hub initialized successfully!", 4)
